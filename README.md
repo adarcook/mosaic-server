@@ -163,6 +163,7 @@ PowerShell:
 ```powershell
 $env:MOSAIC_MEAL_ANALYZER="codex"
 $env:MOSAIC_CODEX_TIMEOUT_SECONDS="120"
+$env:MOSAIC_CODEX_EXECUTABLE="C:\Users\orele\AppData\Roaming\npm\codex.cmd"
 uvicorn mosaic_server.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
