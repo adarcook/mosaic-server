@@ -8,7 +8,10 @@ client = TestClient(app)
 def test_health() -> None:
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {
+        "status": "ok",
+        "meal_analyzer": "MockMealAnalyzer",
+    }
 
 
 def test_analyze_meal_accepts_jpeg() -> None:
