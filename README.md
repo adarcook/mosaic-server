@@ -48,6 +48,111 @@ The health endpoint returns the active analyzer:
 {"status":"ok","meal_analyzer":"MockMealAnalyzer"}
 ```
 
+## Installing Codex CLI on Ubuntu Server
+
+### 1. Install Node.js and npm
+
+Install the Ubuntu packages first:
+
+```bash
+sudo apt update
+sudo apt install -y nodejs npm
+```
+
+Verify the installation:
+
+```bash
+node --version
+npm --version
+```
+
+If the Ubuntu repository provides an old Node.js release, install a current LTS release
+using your preferred Node.js version manager or package source before continuing.
+
+### 2. Install Codex CLI
+
+```bash
+sudo npm install -g @openai/codex
+```
+
+Verify that the command is available:
+
+```bash
+codex --version
+which codex
+```
+
+### 3. Sign in with ChatGPT
+
+Run:
+
+```bash
+codex --login
+```
+
+Follow the authorization instructions shown in the terminal. On a headless VPS, open the
+provided sign-in address in a browser on another device when prompted, then complete the
+ChatGPT sign-in flow.
+
+Confirm that authentication works:
+
+```bash
+codex
+```
+
+Exit the interactive session with `Ctrl+C` after the prompt opens successfully.
+
+To refresh an existing or expired login:
+
+```bash
+codex logout
+codex --login
+```
+
+### 4. Install Mosaic Server on Ubuntu
+
+From the repository root:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+### 5. Enable the Codex meal analyzer
+
+```bash
+export MOSAIC_MEAL_ANALYZER=codex
+export MOSAIC_CODEX_TIMEOUT_SECONDS=120
+uvicorn mosaic_server.main:app --host 0.0.0.0 --port 8000
+```
+
+Check the active analyzer:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Expected response:
+
+```json
+{"status":"ok","meal_analyzer":"CodexCliMealAnalyzer"}
+```
+
+### Ubuntu troubleshooting
+
+If `codex` is not found after installation:
+
+```bash
+npm config get prefix
+which npm
+which codex
+```
+
+Make sure the npm global binary directory is included in the `PATH` of the Linux user that
+runs Mosaic Server. The same user must also complete `codex --login`; authentication stored
+for another user, including `root`, will not automatically be available to the service user.
+
 ## Enabling real analysis with Codex CLI
 
 Install and authenticate a current Codex CLI release on the machine running the server.
