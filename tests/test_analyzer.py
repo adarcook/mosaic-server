@@ -5,6 +5,15 @@ from pathlib import Path
 import pytest
 
 from mosaic_server.analyzer import CodexCliMealAnalyzer, MealAnalyzerError
+from mosaic_server.models import MealAnalysisResponse
+
+
+def test_meal_analysis_schema_forbids_additional_properties() -> None:
+    schema = MealAnalysisResponse.model_json_schema()
+
+    assert schema["additionalProperties"] is False
+    assert schema["$defs"]["MealItem"]["additionalProperties"] is False
+    assert schema["$defs"]["NutritionEstimate"]["additionalProperties"] is False
 
 
 def test_codex_analyzer_parses_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
