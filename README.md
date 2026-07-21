@@ -17,14 +17,13 @@ Always-on FastAPI service intended to run on the VPS.
 - Android user-interface logic
 - Permanent coupling to Codex CLI or any single model provider
 
-## Planned stack
+## Stack
 
 - Python 3.12+
 - FastAPI
 - Pydantic
-- SQLAlchemy
-- PostgreSQL for production
-- Docker
+- Pytest
+- Codex CLI adapter for the first real meal-analysis provider
 
 ## Running the server
 
@@ -34,30 +33,65 @@ environment, then install the project:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -e .
+python -m pip install -e ".[dev]"
 ```
 
-Start the development server:
+Start the development server with the deterministic mock analyzer:
 
 ```powershell
 uvicorn mosaic_server.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The API is available at `http://127.0.0.1:8000`. Verify it is running by opening
-`http://127.0.0.1:8000/health`; the endpoint should return `{"status":"ok"}`.
+The health endpoint returns the active analyzer:
 
-## Proposed package layout
-
-```text
-src/mosaic_server/
-├── api/
-├── analyzers/
-├── core/
-├── db/
-├── models/
-└── services/
+```json
+{"status":"ok","meal_analyzer":"MockMealAnalyzer"}
 ```
 
-## Status
+## Enabling real analysis with Codex CLI
 
-Foundation stage. The first implementation milestone is a health endpoint and a versioned meal-analysis contract.
+Install and authenticate a current Codex CLI release on the machine running the server.
+Then set the analyzer provider before starting Uvicorn.
+
+PowerShell:
+
+```powershell
+$env:MOSAIC_MEAL_ANALYZER="codex"
+$env:MOSAIC_CODEX_TIMEOUT_SECONDS="120"
+uvicorn mosaic_server.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Linux/VPS:
+
+```bash
+export MOSAIC_MEAL_ANALYZER=codex
+export MOSAIC_CODEX_TIMEOUT_SECONDS=120
+uvicorn mosaic_server.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Optional settings:
+
+- `MOSAIC_CODEX_EXECUTABLE` — path or command name for Codex CLI; defaults to `codex`
+- `MOSAIC_CODEX_MODEL` — explicit model override; omitted by default
+- `MOSAIC_CODEX_TIMEOUT_SECONDS` — process timeout; defaults to `120`
+
+The server writes each upload into a temporary private directory, invokes `codex exec`
+with the image and a generated JSON schema, validates the final JSON with Pydantic, and
+deletes the temporary files after the request. Provider failures are returned as HTTP 502
+rather than being silently replaced with fabricated nutrition data.
+
+## Tests
+
+```powershell
+pytest
+```
+
+The tests use the mock analyzer and mock the Codex subprocess. They do not consume model
+usage or require Codex authentication.
+
+## Current API
+
+- `GET /health`
+- `POST /v1/meals/analyze`
+
+Supported upload formats are JPEG, PNG, and WebP, with a maximum size of 10 MB.
