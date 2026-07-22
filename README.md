@@ -21,7 +21,7 @@ Always-on FastAPI service intended to run on the VPS.
 
 - Python 3.12+
 - FastAPI
-- Pydantic
+- Pydantic and pydantic-settings
 - Pytest
 - Codex CLI adapter for the first real meal-analysis provider
 
@@ -48,88 +48,124 @@ The health endpoint returns the active analyzer:
 {"status":"ok","meal_analyzer":"MockMealAnalyzer"}
 ```
 
+## Configuration
+
+Mosaic Server uses a typed `Settings` model from `pydantic-settings`. Configuration is
+validated at startup instead of being read ad hoc throughout the code.
+
+Sources are applied in this order:
+
+1. Real process environment variables
+2. A local `.env` file in the repository working directory
+3. Defaults defined by the settings model
+
+Environment variables therefore override `.env`. The `.env` file is intended for local
+development only and is excluded from Git. Copy the committed template:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+or on Linux:
+
+```bash
+cp .env.example .env
+```
+
+To use Codex locally, edit `.env`:
+
+```dotenv
+MOSAIC_MEAL_ANALYZER=codex
+MOSAIC_CODEX_EXECUTABLE=codex
+MOSAIC_CODEX_TIMEOUT_SECONDS=120
+# MOSAIC_CODEX_MODEL=gpt-5.6-sol
+```
+
+On Windows, npm may expose Codex through a `.cmd` shim. When the server cannot find it,
+set the full path returned by `where.exe codex`:
+
+```dotenv
+MOSAIC_CODEX_EXECUTABLE=C:\Users\your-user\AppData\Roaming\npm\codex.cmd
+```
+
+Restart the server after changing configuration. Settings are loaded once per process.
+
+### Production recommendation
+
+Do not commit a production `.env` file. On Ubuntu, inject the same `MOSAIC_*` variables
+through the service manager. A practical systemd deployment can use a root-owned file
+outside the repository:
+
+```ini
+# /etc/mosaic-server/mosaic-server.env
+MOSAIC_MEAL_ANALYZER=codex
+MOSAIC_CODEX_EXECUTABLE=/usr/local/bin/codex
+MOSAIC_CODEX_TIMEOUT_SECONDS=120
+```
+
+Protect it:
+
+```bash
+sudo chown root:root /etc/mosaic-server/mosaic-server.env
+sudo chmod 600 /etc/mosaic-server/mosaic-server.env
+```
+
+Reference it from the systemd unit:
+
+```ini
+[Service]
+EnvironmentFile=/etc/mosaic-server/mosaic-server.env
+```
+
+This keeps deployment configuration outside Git while retaining the same validated settings
+model. Future secrets such as API keys should preferably be supplied through a secret manager
+or systemd credentials rather than stored in the repository's `.env` file.
+
 ## Installing Codex CLI on Ubuntu Server
 
 ### 1. Install Node.js and npm
-
-Install the Ubuntu packages first:
 
 ```bash
 sudo apt update
 sudo apt install -y nodejs npm
 ```
 
-Verify the installation:
+Verify:
 
 ```bash
 node --version
 npm --version
 ```
 
-If the Ubuntu repository provides an old Node.js release, install a current LTS release
-using your preferred Node.js version manager or package source before continuing.
+If Ubuntu provides an old Node.js release, install a current LTS release using your preferred
+Node.js version manager or package source.
 
-### 2. Install Codex CLI
+### 2. Install and authenticate Codex CLI
 
 ```bash
 sudo npm install -g @openai/codex
-```
-
-Verify that the command is available:
-
-```bash
 codex --version
 which codex
-```
-
-### 3. Sign in with ChatGPT
-
-Run:
-
-```bash
 codex --login
 ```
 
-Follow the authorization instructions shown in the terminal. On a headless VPS, open the
-provided sign-in address in a browser on another device when prompted, then complete the
-ChatGPT sign-in flow.
+On a headless VPS, follow the terminal instructions and complete the sign-in in a browser on
+another device. The Linux user running Mosaic Server must be the user that completes the Codex
+login.
 
-Confirm that authentication works:
-
-```bash
-codex
-```
-
-Exit the interactive session with `Ctrl+C` after the prompt opens successfully.
-
-To refresh an existing or expired login:
-
-```bash
-codex logout
-codex --login
-```
-
-### 4. Install Mosaic Server on Ubuntu
-
-From the repository root:
+### 3. Install and run Mosaic Server
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
+cp .env.example .env
 ```
 
-### 5. Enable the Codex meal analyzer
+For a quick manual test, set `MOSAIC_MEAL_ANALYZER=codex` in `.env` and run:
 
 ```bash
-export MOSAIC_MEAL_ANALYZER=codex
-export MOSAIC_CODEX_TIMEOUT_SECONDS=120
 uvicorn mosaic_server.main:app --host 0.0.0.0 --port 8000
-```
-
-Check the active analyzer:
-
-```bash
 curl http://127.0.0.1:8000/health
 ```
 
@@ -139,52 +175,20 @@ Expected response:
 {"status":"ok","meal_analyzer":"CodexCliMealAnalyzer"}
 ```
 
-### Ubuntu troubleshooting
+If Codex is not found, compare `which codex` with `MOSAIC_CODEX_EXECUTABLE` and confirm that
+the server process runs as the same authenticated user.
 
-If `codex` is not found after installation:
+## Analyzer settings
 
-```bash
-npm config get prefix
-which npm
-which codex
-```
+- `MOSAIC_MEAL_ANALYZER` — `mock` or `codex`; defaults to `mock`
+- `MOSAIC_CODEX_EXECUTABLE` — path or command name; defaults to `codex`
+- `MOSAIC_CODEX_MODEL` — optional explicit model override
+- `MOSAIC_CODEX_TIMEOUT_SECONDS` — validated range 1–900; defaults to `120`
 
-Make sure the npm global binary directory is included in the `PATH` of the Linux user that
-runs Mosaic Server. The same user must also complete `codex --login`; authentication stored
-for another user, including `root`, will not automatically be available to the service user.
-
-## Enabling real analysis with Codex CLI
-
-Install and authenticate a current Codex CLI release on the machine running the server.
-Then set the analyzer provider before starting Uvicorn.
-
-PowerShell:
-
-```powershell
-$env:MOSAIC_MEAL_ANALYZER="codex"
-$env:MOSAIC_CODEX_TIMEOUT_SECONDS="120"
-$env:MOSAIC_CODEX_EXECUTABLE="C:\Users\orele\AppData\Roaming\npm\codex.cmd"
-uvicorn mosaic_server.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Linux/VPS:
-
-```bash
-export MOSAIC_MEAL_ANALYZER=codex
-export MOSAIC_CODEX_TIMEOUT_SECONDS=120
-uvicorn mosaic_server.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Optional settings:
-
-- `MOSAIC_CODEX_EXECUTABLE` — path or command name for Codex CLI; defaults to `codex`
-- `MOSAIC_CODEX_MODEL` — explicit model override; omitted by default
-- `MOSAIC_CODEX_TIMEOUT_SECONDS` — process timeout; defaults to `120`
-
-The server writes each upload into a temporary private directory, invokes `codex exec`
-with the image and a generated JSON schema, validates the final JSON with Pydantic, and
-deletes the temporary files after the request. Provider failures are returned as HTTP 502
-rather than being silently replaced with fabricated nutrition data.
+The server writes each upload into a temporary private directory, invokes `codex exec` with
+the image and a generated JSON schema, validates the final JSON with Pydantic, and deletes the
+temporary files after the request. Provider failures are returned as HTTP 502 rather than being
+silently replaced with fabricated nutrition data.
 
 ## Tests
 
@@ -192,8 +196,8 @@ rather than being silently replaced with fabricated nutrition data.
 pytest
 ```
 
-The tests use the mock analyzer and mock the Codex subprocess. They do not consume model
-usage or require Codex authentication.
+The tests use the mock analyzer and mock the Codex subprocess. They do not consume model usage
+or require Codex authentication.
 
 ## Current API
 
