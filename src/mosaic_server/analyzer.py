@@ -12,6 +12,7 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from mosaic_server.models import MealAnalysisResponse, MealItem, NutritionEstimate
+from mosaic_server.translator import ArgosTextTranslator, TextTranslator, TranslationError
 
 logger = logging.getLogger(__name__)
 
@@ -57,17 +58,19 @@ class MockMealAnalyzer:
 
 
 class CodexCliMealAnalyzer:
-    """Analyze a meal image by invoking Codex CLI in non-interactive mode."""
+    """Analyze a meal image with Codex and localize its text independently."""
 
     def __init__(
         self,
         executable: str = "codex",
         timeout_seconds: int = 120,
         model: str | None = None,
+        translator: TextTranslator | None = None,
     ) -> None:
         self.executable = executable
         self.timeout_seconds = timeout_seconds
         self.model = model
+        self.translator = translator or ArgosTextTranslator()
 
     def analyze(self, filename: str, image_bytes: bytes) -> MealAnalysisResponse:
         digest = sha256(image_bytes).hexdigest()[:12]
@@ -78,7 +81,6 @@ class CodexCliMealAnalyzer:
             image_path = workdir / f"meal{suffix}"
             schema_path = workdir / "meal-analysis.schema.json"
             output_path = workdir / "meal-analysis.json"
-            source_path = workdir / "meal-analysis-source.json"
 
             image_path.write_bytes(image_bytes)
             schema_path.write_text(
@@ -95,36 +97,49 @@ class CodexCliMealAnalyzer:
             )
             original = self._read_result(output_path, digest)
 
-            if self._has_hebrew_user_facing_text(original):
-                return original
+        return self._translate_user_facing_text(original)
 
-            source_path.write_text(
-                original.model_dump_json(indent=2),
-                encoding="utf-8",
+    def _translate_user_facing_text(
+        self, result: MealAnalysisResponse
+    ) -> MealAnalysisResponse:
+        try:
+            items = [
+                MealItem(
+                    name=self._translate_if_needed(item.name),
+                    estimated_quantity=self._translate_if_needed(item.estimated_quantity),
+                    confidence=item.confidence,
+                )
+                for item in result.items
+            ]
+            assumptions = [self._translate_if_needed(value) for value in result.assumptions]
+            questions = [
+                self._translate_if_needed(value) for value in result.confirmation_questions
+            ]
+        except TranslationError as exc:
+            logger.warning(
+                "Local Hebrew translation failed; returning the original valid analysis: %s",
+                exc,
             )
+            return result
 
-            try:
-                self._run_codex(
-                    workdir=workdir,
-                    schema_path=schema_path,
-                    output_path=output_path,
-                    prompt=self._hebrew_rewrite_prompt(source_path.name),
-                )
-                rewritten = self._read_result(output_path, digest)
-                self._ensure_rewrite_preserved_analysis(original, rewritten)
-                if self._has_hebrew_user_facing_text(rewritten):
-                    return rewritten
-                logger.warning(
-                    "Codex Hebrew rewrite still contained non-Hebrew user-facing text; "
-                    "returning the original valid analysis"
-                )
-            except MealAnalyzerError as exc:
-                logger.warning(
-                    "Codex Hebrew rewrite failed; returning the original valid analysis: %s",
-                    exc,
-                )
+        translated = result.model_copy(
+            update={
+                "items": items,
+                "assumptions": assumptions,
+                "confirmation_questions": questions,
+            }
+        )
+        if not self._has_hebrew_user_facing_text(translated):
+            logger.warning(
+                "Local translator returned non-Hebrew text; returning the original valid analysis"
+            )
+            return result
+        return translated
 
-            return original
+    def _translate_if_needed(self, value: str) -> str:
+        if re.search(r"[\u0590-\u05FF]", value):
+            return value
+        return self.translator.translate(value, "en", "he")
 
     def _run_codex(
         self,
@@ -133,7 +148,7 @@ class CodexCliMealAnalyzer:
         schema_path: Path,
         output_path: Path,
         prompt: str,
-        image_path: Path | None = None,
+        image_path: Path,
     ) -> None:
         output_path.unlink(missing_ok=True)
         command = [
@@ -142,17 +157,13 @@ class CodexCliMealAnalyzer:
             "--skip-git-repo-check",
             "--sandbox",
             "read-only",
+            "--image",
+            str(image_path),
+            "--output-schema",
+            str(schema_path),
+            "-o",
+            str(output_path),
         ]
-        if image_path is not None:
-            command.extend(["--image", str(image_path)])
-        command.extend(
-            [
-                "--output-schema",
-                str(schema_path),
-                "-o",
-                str(output_path),
-            ]
-        )
         if self.model:
             command.extend(["--model", self.model])
         command.append(prompt)
@@ -203,61 +214,16 @@ class CodexCliMealAnalyzer:
         return bool(values) and all(re.search(r"[\u0590-\u05FF]", value) for value in values)
 
     @staticmethod
-    def _ensure_rewrite_preserved_analysis(
-        original: MealAnalysisResponse,
-        rewritten: MealAnalysisResponse,
-    ) -> None:
-        preserved = (
-            rewritten.analysis_id == original.analysis_id
-            and rewritten.status == original.status
-            and rewritten.nutrition == original.nutrition
-            and len(rewritten.items) == len(original.items)
-            and len(rewritten.assumptions) == len(original.assumptions)
-            and len(rewritten.confirmation_questions)
-            == len(original.confirmation_questions)
-            and all(
-                rewritten_item.confidence == original_item.confidence
-                for original_item, rewritten_item in zip(
-                    original.items, rewritten.items, strict=True
-                )
-            )
-        )
-        if not preserved:
-            raise MealAnalyzerError(
-                "Codex CLI Hebrew rewrite changed the original meal analysis"
-            )
-
-    @staticmethod
     def _prompt(digest: str) -> str:
         return f"""
 Analyze the attached meal photo for Mosaic Fit.
 
 Return only data matching the supplied JSON schema. Use analysis_id "codex-{digest}".
-All user-facing text values must be written in clear, natural Hebrew. This includes every
-item name, estimated_quantity, assumption, and confirmation question. Do not return English
-sentences or mixed Hebrew-English prose. Brand names, product names, units, and established
-terms may remain in their original spelling only when translating them would reduce clarity,
-but every user-facing field must still contain explanatory Hebrew text.
-Write Hebrew quantities in a natural right-to-left form, for example "גביע אחד, כ-200 גרם".
-
 Identify visible foods and estimate quantities conservatively. Estimate total calories,
 protein, carbohydrates, and fat. Set status to "needs_confirmation" whenever ingredients,
 preparation method, oils, sauces, or quantities are uncertain. Put uncertainties in
 assumptions and ask concise, actionable confirmation questions. Never claim certainty
 from the image alone and never invent hidden ingredients.
-""".strip()
 
-    @staticmethod
-    def _hebrew_rewrite_prompt(source_filename: str) -> str:
-        return f"""
-Open and read the existing JSON file `{source_filename}` from the current working directory.
-It contains a completed meal analysis. Return the same analysis using the supplied output
-schema, translating only user-facing text into natural Hebrew.
-
-Translate each item name, estimated_quantity, assumption, and confirmation question.
-Do not describe the task, mention JSON, ask the user to paste data, or produce placeholder text.
-Preserve exactly: analysis_id, status, nutrition values, confidence values, item count, item
-order, assumption count, confirmation-question count, facts, and meaning. Brand names such as
-Danone PRO may remain unchanged only inside otherwise Hebrew text. Every user-facing string
-must contain Hebrew characters.
+Use clear English for user-facing text. Localization is handled separately by the server.
 """.strip()
