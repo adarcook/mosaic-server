@@ -1,11 +1,24 @@
+import importlib
+
+import pytest
 from fastapi.testclient import TestClient
 
-from mosaic_server.main import app
 
-client = TestClient(app)
+@pytest.fixture()
+def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    monkeypatch.setenv("MOSAIC_MEAL_ANALYZER", "mock")
+    monkeypatch.delenv("MOSAIC_CODEX_EXECUTABLE", raising=False)
+    monkeypatch.delenv("MOSAIC_CODEX_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("MOSAIC_CODEX_MODEL", raising=False)
+
+    import mosaic_server.main as main_module
+
+    main_module = importlib.reload(main_module)
+    with TestClient(main_module.app) as test_client:
+        yield test_client
 
 
-def test_health() -> None:
+def test_health(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {
@@ -14,7 +27,7 @@ def test_health() -> None:
     }
 
 
-def test_analyze_meal_accepts_jpeg() -> None:
+def test_analyze_meal_accepts_jpeg(client: TestClient) -> None:
     response = client.post(
         "/v1/meals/analyze",
         files={"image": ("meal.jpg", b"fake-jpeg-content", "image/jpeg")},
@@ -28,7 +41,7 @@ def test_analyze_meal_accepts_jpeg() -> None:
     assert len(body["confirmation_questions"]) == 2
 
 
-def test_analyze_meal_rejects_unsupported_content_type() -> None:
+def test_analyze_meal_rejects_unsupported_content_type(client: TestClient) -> None:
     response = client.post(
         "/v1/meals/analyze",
         files={"image": ("meal.txt", b"not-an-image", "text/plain")},
@@ -37,7 +50,7 @@ def test_analyze_meal_rejects_unsupported_content_type() -> None:
     assert response.status_code == 415
 
 
-def test_analyze_meal_rejects_empty_file() -> None:
+def test_analyze_meal_rejects_empty_file(client: TestClient) -> None:
     response = client.post(
         "/v1/meals/analyze",
         files={"image": ("meal.jpg", b"", "image/jpeg")},

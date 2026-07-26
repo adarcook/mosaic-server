@@ -6,6 +6,19 @@ from pydantic import ValidationError
 from mosaic_server.analyzer import CodexCliMealAnalyzer, MockMealAnalyzer
 from mosaic_server.settings import Settings, build_meal_analyzer
 
+MOSAIC_ENV_VARS = (
+    "MOSAIC_MEAL_ANALYZER",
+    "MOSAIC_CODEX_EXECUTABLE",
+    "MOSAIC_CODEX_TIMEOUT_SECONDS",
+    "MOSAIC_CODEX_MODEL",
+)
+
+
+@pytest.fixture(autouse=True)
+def isolate_mosaic_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in MOSAIC_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
 
 def test_settings_defaults_to_mock() -> None:
     settings = Settings(_env_file=None)
