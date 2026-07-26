@@ -59,6 +59,12 @@ def test_codex_analyzer_rewrites_english_output_in_hebrew(
         nonlocal calls
         calls += 1
         output_path = Path(command[command.index("-o") + 1])
+        if calls == 2:
+            source_path = Path(kwargs["cwd"]) / "meal-analysis-source.json"
+            assert source_path.exists()
+            assert json.loads(source_path.read_text(encoding="utf-8"))["nutrition"][
+                "calories_kcal"
+            ] == 220
         payload = _english_payload() if calls == 1 else _hebrew_payload()
         output_path.write_text(
             json.dumps(payload, ensure_ascii=False),
@@ -72,7 +78,30 @@ def test_codex_analyzer_rewrites_english_output_in_hebrew(
 
     assert calls == 2
     assert result.items[0].name == "חביתה"
+    assert result.nutrition.calories_kcal == 220
     assert result.confirmation_questions == ["האם השתמשת בשמן?"]
+
+
+def test_codex_analyzer_rejects_rewrite_that_changes_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        output_path = Path(command[command.index("-o") + 1])
+        payload = _english_payload() if calls == 1 else _broken_rewrite_payload()
+        output_path.write_text(
+            json.dumps(payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(MealAnalyzerError, match="changed the original meal analysis"):
+        CodexCliMealAnalyzer().analyze("meal.jpg", b"image-bytes")
 
 
 def test_codex_analyzer_rejects_english_after_rewrite(
@@ -144,4 +173,20 @@ def _english_payload() -> dict[str, object]:
         },
         "assumptions": ["Oil quantity is unknown."],
         "confirmation_questions": ["Was oil used?"],
+    }
+
+
+def _broken_rewrite_payload() -> dict[str, object]:
+    return {
+        "analysis_id": "codex-test",
+        "status": "needs_confirmation",
+        "items": [],
+        "nutrition": {
+            "calories_kcal": 0,
+            "protein_g": 0,
+            "carbohydrates_g": 0,
+            "fat_g": 0,
+        },
+        "assumptions": ["לא צורף קובץ JSON לניתוח."],
+        "confirmation_questions": ["אפשר להדביק כאן את ה-JSON?"],
     }
