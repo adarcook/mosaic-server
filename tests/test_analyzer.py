@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from mosaic_server.analyzer import CodexCliMealAnalyzer, MealAnalyzerError
+from mosaic_server.analyzer import CodexCliMealAnalyzer, MealAnalyzerError, MockMealAnalyzer
 from mosaic_server.models import MealAnalysisResponse
 
 
@@ -14,6 +14,21 @@ def test_meal_analysis_schema_forbids_additional_properties() -> None:
     assert schema["additionalProperties"] is False
     assert schema["$defs"]["MealItem"]["additionalProperties"] is False
     assert schema["$defs"]["NutritionEstimate"]["additionalProperties"] is False
+
+
+def test_codex_prompt_requires_hebrew_user_facing_text() -> None:
+    prompt = CodexCliMealAnalyzer._prompt("test-digest")
+
+    assert "All user-facing text values must be written in clear, natural Hebrew" in prompt
+    assert "item name, estimated_quantity, assumption, and confirmation question" in prompt
+    assert "Do not return English sentences or mixed Hebrew-English prose" in prompt
+
+
+def test_mock_analyzer_returns_hebrew_content() -> None:
+    result = MockMealAnalyzer().analyze("meal.jpg", b"image-bytes")
+
+    assert result.items[0].name == "תמונת ארוחה התקבלה"
+    assert result.confirmation_questions[0] == "אילו מזונות מופיעים בתמונה?"
 
 
 def test_codex_analyzer_parses_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -26,8 +41,8 @@ def test_codex_analyzer_parses_structured_output(monkeypatch: pytest.MonkeyPatch
                     "status": "needs_confirmation",
                     "items": [
                         {
-                            "name": "Omelette",
-                            "estimated_quantity": "2 eggs",
+                            "name": "חביתה",
+                            "estimated_quantity": "שתי ביצים",
                             "confidence": 0.8,
                         }
                     ],
@@ -37,9 +52,10 @@ def test_codex_analyzer_parses_structured_output(monkeypatch: pytest.MonkeyPatch
                         "carbohydrates_g": 2,
                         "fat_g": 16,
                     },
-                    "assumptions": ["Oil quantity is unknown."],
-                    "confirmation_questions": ["Was oil used?"],
-                }
+                    "assumptions": ["כמות השמן אינה ידועה."],
+                    "confirmation_questions": ["האם השתמשת בשמן?"],
+                },
+                ensure_ascii=False,
             ),
             encoding="utf-8",
         )
@@ -50,7 +66,7 @@ def test_codex_analyzer_parses_structured_output(monkeypatch: pytest.MonkeyPatch
     result = CodexCliMealAnalyzer().analyze("meal.jpg", b"image-bytes")
 
     assert result.analysis_id == "codex-test"
-    assert result.items[0].name == "Omelette"
+    assert result.items[0].name == "חביתה"
     assert result.nutrition.protein_g == 15
 
 
