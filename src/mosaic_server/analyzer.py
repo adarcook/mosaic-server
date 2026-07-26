@@ -30,8 +30,8 @@ class MockMealAnalyzer:
             status="needs_confirmation",
             items=[
                 MealItem(
-                    name="Meal photo received",
-                    estimated_quantity="Unknown",
+                    name="תמונת ארוחה התקבלה",
+                    estimated_quantity="הכמות אינה ידועה",
                     confidence=0.25,
                 )
             ],
@@ -42,12 +42,12 @@ class MockMealAnalyzer:
                 fat_g=0,
             ),
             assumptions=[
-                f"Mock analysis was used for {filename}.",
-                "No nutritional values are inferred until a real analyzer is connected.",
+                f"נעשה שימוש בניתוח דמה עבור הקובץ {filename}.",
+                "לא חושבו ערכים תזונתיים משום שלא מחובר מנתח תמונות אמיתי.",
             ],
             confirmation_questions=[
-                "What foods are visible in the photo?",
-                "What are the approximate quantities?",
+                "אילו מזונות מופיעים בתמונה?",
+                "מהן הכמויות המשוערות?",
             ],
         )
 
@@ -137,6 +137,12 @@ class CodexCliMealAnalyzer:
 Analyze the attached meal photo for Mosaic Fit.
 
 Return only data matching the supplied JSON schema. Use analysis_id "codex-{digest}".
+All user-facing text values must be written in clear, natural Hebrew. This includes every
+item name, estimated_quantity, assumption, and confirmation question. Do not return English
+sentences or mixed Hebrew-English prose. Brand names, product names, units, and established
+terms may remain in their original spelling only when translating them would reduce clarity.
+Write Hebrew quantities in a natural right-to-left form, for example "גביע אחד, כ-200 גרם".
+
 Identify visible foods and estimate quantities conservatively. Estimate total calories,
 protein, carbohydrates, and fat. Set status to "needs_confirmation" whenever ingredients,
 preparation method, oils, sauces, or quantities are uncertain. Put uncertainties in
