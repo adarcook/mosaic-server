@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from hashlib import sha256
@@ -81,55 +82,106 @@ class CodexCliMealAnalyzer:
                 encoding="utf-8",
             )
 
-            command = [
-                self.executable,
-                "exec",
-                "--skip-git-repo-check",
-                "--sandbox",
-                "read-only",
-                "--image",
-                str(image_path),
+            self._run_codex(
+                workdir=workdir,
+                schema_path=schema_path,
+                output_path=output_path,
+                prompt=self._prompt(digest),
+                image_path=image_path,
+            )
+            result = self._read_result(output_path, digest)
+
+            if not self._has_hebrew_user_facing_text(result):
+                source_json = result.model_dump_json(indent=2)
+                self._run_codex(
+                    workdir=workdir,
+                    schema_path=schema_path,
+                    output_path=output_path,
+                    prompt=self._hebrew_rewrite_prompt(source_json),
+                )
+                result = self._read_result(output_path, digest)
+
+            if not self._has_hebrew_user_facing_text(result):
+                raise MealAnalyzerError(
+                    "Codex CLI returned user-facing meal text that is not in Hebrew"
+                )
+
+            return result
+
+    def _run_codex(
+        self,
+        *,
+        workdir: Path,
+        schema_path: Path,
+        output_path: Path,
+        prompt: str,
+        image_path: Path | None = None,
+    ) -> None:
+        command = [
+            self.executable,
+            "exec",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+        ]
+        if image_path is not None:
+            command.extend(["--image", str(image_path)])
+        command.extend(
+            [
                 "--output-schema",
                 str(schema_path),
                 "-o",
                 str(output_path),
             ]
-            if self.model:
-                command.extend(["--model", self.model])
-            command.append(self._prompt(digest))
+        )
+        if self.model:
+            command.extend(["--model", self.model])
+        command.append(prompt)
 
-            try:
-                completed = subprocess.run(
-                    command,
-                    cwd=workdir,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.timeout_seconds,
-                    check=False,
-                )
-            except FileNotFoundError as exc:
-                raise MealAnalyzerError(
-                    f"Codex CLI executable was not found: {self.executable}"
-                ) from exc
-            except subprocess.TimeoutExpired as exc:
-                raise MealAnalyzerError(
-                    f"Codex CLI analysis exceeded {self.timeout_seconds} seconds"
-                ) from exc
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=workdir,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise MealAnalyzerError(
+                f"Codex CLI executable was not found: {self.executable}"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise MealAnalyzerError(
+                f"Codex CLI analysis exceeded {self.timeout_seconds} seconds"
+            ) from exc
 
-            if completed.returncode != 0:
-                detail = completed.stderr.strip() or completed.stdout.strip()
-                raise MealAnalyzerError(
-                    f"Codex CLI exited with code {completed.returncode}: {detail}"
-                )
-            if not output_path.exists():
-                raise MealAnalyzerError("Codex CLI did not create the expected JSON output")
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise MealAnalyzerError(
+                f"Codex CLI exited with code {completed.returncode}: {detail}"
+            )
+        if not output_path.exists():
+            raise MealAnalyzerError("Codex CLI did not create the expected JSON output")
 
-            try:
-                payload = json.loads(output_path.read_text(encoding="utf-8"))
-                payload["analysis_id"] = payload.get("analysis_id") or f"codex-{digest}"
-                return MealAnalysisResponse.model_validate(payload)
-            except (json.JSONDecodeError, ValidationError, TypeError) as exc:
-                raise MealAnalyzerError("Codex CLI returned invalid meal-analysis JSON") from exc
+    @staticmethod
+    def _read_result(output_path: Path, digest: str) -> MealAnalysisResponse:
+        try:
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            payload["analysis_id"] = payload.get("analysis_id") or f"codex-{digest}"
+            return MealAnalysisResponse.model_validate(payload)
+        except (json.JSONDecodeError, ValidationError, TypeError) as exc:
+            raise MealAnalyzerError("Codex CLI returned invalid meal-analysis JSON") from exc
+
+    @staticmethod
+    def _has_hebrew_user_facing_text(result: MealAnalysisResponse) -> bool:
+        values = [
+            *(item.name for item in result.items),
+            *(item.estimated_quantity for item in result.items),
+            *result.assumptions,
+            *result.confirmation_questions,
+        ]
+        return bool(values) and all(re.search(r"[\u0590-\u05FF]", value) for value in values)
 
     @staticmethod
     def _prompt(digest: str) -> str:
@@ -140,7 +192,8 @@ Return only data matching the supplied JSON schema. Use analysis_id "codex-{dige
 All user-facing text values must be written in clear, natural Hebrew. This includes every
 item name, estimated_quantity, assumption, and confirmation question. Do not return English
 sentences or mixed Hebrew-English prose. Brand names, product names, units, and established
-terms may remain in their original spelling only when translating them would reduce clarity.
+terms may remain in their original spelling only when translating them would reduce clarity,
+but every user-facing field must still contain explanatory Hebrew text.
 Write Hebrew quantities in a natural right-to-left form, for example "גביע אחד, כ-200 גרם".
 
 Identify visible foods and estimate quantities conservatively. Estimate total calories,
@@ -148,4 +201,19 @@ protein, carbohydrates, and fat. Set status to "needs_confirmation" whenever ing
 preparation method, oils, sauces, or quantities are uncertain. Put uncertainties in
 assumptions and ask concise, actionable confirmation questions. Never claim certainty
 from the image alone and never invent hidden ingredients.
+""".strip()
+
+    @staticmethod
+    def _hebrew_rewrite_prompt(source_json: str) -> str:
+        return f"""
+Rewrite the following meal-analysis JSON so every user-facing text value is in natural Hebrew.
+Return only JSON matching the supplied schema.
+
+Translate every item name, estimated_quantity, assumption, and confirmation question.
+Preserve analysis_id, status, confidence values, nutrition numbers, item order, and meaning.
+Brand names such as Danone PRO may remain unchanged, but surround them with Hebrew descriptive
+text. Every user-facing string must contain Hebrew characters. Do not add or remove facts.
+
+Source JSON:
+{source_json}
 """.strip()
