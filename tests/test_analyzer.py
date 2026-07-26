@@ -82,7 +82,7 @@ def test_codex_analyzer_rewrites_english_output_in_hebrew(
     assert result.confirmation_questions == ["האם השתמשת בשמן?"]
 
 
-def test_codex_analyzer_rejects_rewrite_that_changes_analysis(
+def test_codex_analyzer_falls_back_when_rewrite_changes_analysis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
@@ -100,11 +100,14 @@ def test_codex_analyzer_rejects_rewrite_that_changes_analysis(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    with pytest.raises(MealAnalyzerError, match="changed the original meal analysis"):
-        CodexCliMealAnalyzer().analyze("meal.jpg", b"image-bytes")
+    result = CodexCliMealAnalyzer().analyze("meal.jpg", b"image-bytes")
+
+    assert calls == 2
+    assert result.items[0].name == "Omelette"
+    assert result.nutrition.calories_kcal == 220
 
 
-def test_codex_analyzer_rejects_english_after_rewrite(
+def test_codex_analyzer_falls_back_when_rewrite_stays_english(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -114,8 +117,10 @@ def test_codex_analyzer_rejects_english_after_rewrite(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    with pytest.raises(MealAnalyzerError, match="not in Hebrew"):
-        CodexCliMealAnalyzer().analyze("meal.jpg", b"image-bytes")
+    result = CodexCliMealAnalyzer().analyze("meal.jpg", b"image-bytes")
+
+    assert result.items[0].name == "Omelette"
+    assert result.confirmation_questions == ["Was oil used?"]
 
 
 def test_codex_analyzer_reports_missing_executable(
