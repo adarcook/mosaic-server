@@ -20,8 +20,7 @@ def test_codex_prompt_requires_hebrew_user_facing_text() -> None:
     prompt = CodexCliMealAnalyzer._prompt("test-digest")
 
     assert "All user-facing text values must be written in clear, natural Hebrew" in prompt
-    assert "item name, estimated_quantity, assumption, and confirmation question" in prompt
-    assert "Do not return English sentences or mixed Hebrew-English prose" in prompt
+    assert "every user-facing field must still contain explanatory Hebrew text" in prompt
 
 
 def test_mock_analyzer_returns_hebrew_content() -> None:
@@ -31,32 +30,13 @@ def test_mock_analyzer_returns_hebrew_content() -> None:
     assert result.confirmation_questions[0] == "אילו מזונות מופיעים בתמונה?"
 
 
-def test_codex_analyzer_parses_structured_output(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_codex_analyzer_parses_structured_hebrew_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         output_path = Path(command[command.index("-o") + 1])
         output_path.write_text(
-            json.dumps(
-                {
-                    "analysis_id": "codex-test",
-                    "status": "needs_confirmation",
-                    "items": [
-                        {
-                            "name": "חביתה",
-                            "estimated_quantity": "שתי ביצים",
-                            "confidence": 0.8,
-                        }
-                    ],
-                    "nutrition": {
-                        "calories_kcal": 220,
-                        "protein_g": 15,
-                        "carbohydrates_g": 2,
-                        "fat_g": 16,
-                    },
-                    "assumptions": ["כמות השמן אינה ידועה."],
-                    "confirmation_questions": ["האם השתמשת בשמן?"],
-                },
-                ensure_ascii=False,
-            ),
+            json.dumps(_hebrew_payload(), ensure_ascii=False),
             encoding="utf-8",
         )
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
@@ -68,6 +48,45 @@ def test_codex_analyzer_parses_structured_output(monkeypatch: pytest.MonkeyPatch
     assert result.analysis_id == "codex-test"
     assert result.items[0].name == "חביתה"
     assert result.nutrition.protein_g == 15
+
+
+def test_codex_analyzer_rewrites_english_output_in_hebrew(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        output_path = Path(command[command.index("-o") + 1])
+        payload = _english_payload() if calls == 1 else _hebrew_payload()
+        output_path.write_text(
+            json.dumps(payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = CodexCliMealAnalyzer().analyze("meal.jpg", b"image-bytes")
+
+    assert calls == 2
+    assert result.items[0].name == "חביתה"
+    assert result.confirmation_questions == ["האם השתמשת בשמן?"]
+
+
+def test_codex_analyzer_rejects_english_after_rewrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        output_path = Path(command[command.index("-o") + 1])
+        output_path.write_text(json.dumps(_english_payload()), encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(MealAnalyzerError, match="not in Hebrew"):
+        CodexCliMealAnalyzer().analyze("meal.jpg", b"image-bytes")
 
 
 def test_codex_analyzer_reports_missing_executable(
@@ -82,3 +101,47 @@ def test_codex_analyzer_reports_missing_executable(
         CodexCliMealAnalyzer(executable="missing-codex").analyze(
             "meal.jpg", b"image-bytes"
         )
+
+
+def _hebrew_payload() -> dict[str, object]:
+    return {
+        "analysis_id": "codex-test",
+        "status": "needs_confirmation",
+        "items": [
+            {
+                "name": "חביתה",
+                "estimated_quantity": "שתי ביצים",
+                "confidence": 0.8,
+            }
+        ],
+        "nutrition": {
+            "calories_kcal": 220,
+            "protein_g": 15,
+            "carbohydrates_g": 2,
+            "fat_g": 16,
+        },
+        "assumptions": ["כמות השמן אינה ידועה."],
+        "confirmation_questions": ["האם השתמשת בשמן?"],
+    }
+
+
+def _english_payload() -> dict[str, object]:
+    return {
+        "analysis_id": "codex-test",
+        "status": "needs_confirmation",
+        "items": [
+            {
+                "name": "Omelette",
+                "estimated_quantity": "2 eggs",
+                "confidence": 0.8,
+            }
+        ],
+        "nutrition": {
+            "calories_kcal": 220,
+            "protein_g": 15,
+            "carbohydrates_g": 2,
+            "fat_g": 16,
+        },
+        "assumptions": ["Oil quantity is unknown."],
+        "confirmation_questions": ["Was oil used?"],
+    }
