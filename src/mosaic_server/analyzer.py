@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import tempfile
@@ -11,6 +12,8 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from mosaic_server.models import MealAnalysisResponse, MealItem, NutritionEstimate
+
+logger = logging.getLogger(__name__)
 
 
 class MealAnalyzer(Protocol):
@@ -90,29 +93,38 @@ class CodexCliMealAnalyzer:
                 prompt=self._prompt(digest),
                 image_path=image_path,
             )
-            result = self._read_result(output_path, digest)
+            original = self._read_result(output_path, digest)
 
-            if not self._has_hebrew_user_facing_text(result):
-                original = result
-                source_path.write_text(
-                    original.model_dump_json(indent=2),
-                    encoding="utf-8",
-                )
+            if self._has_hebrew_user_facing_text(original):
+                return original
+
+            source_path.write_text(
+                original.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
+
+            try:
                 self._run_codex(
                     workdir=workdir,
                     schema_path=schema_path,
                     output_path=output_path,
                     prompt=self._hebrew_rewrite_prompt(source_path.name),
                 )
-                result = self._read_result(output_path, digest)
-                self._ensure_rewrite_preserved_analysis(original, result)
-
-            if not self._has_hebrew_user_facing_text(result):
-                raise MealAnalyzerError(
-                    "Codex CLI returned user-facing meal text that is not in Hebrew"
+                rewritten = self._read_result(output_path, digest)
+                self._ensure_rewrite_preserved_analysis(original, rewritten)
+                if self._has_hebrew_user_facing_text(rewritten):
+                    return rewritten
+                logger.warning(
+                    "Codex Hebrew rewrite still contained non-Hebrew user-facing text; "
+                    "returning the original valid analysis"
+                )
+            except MealAnalyzerError as exc:
+                logger.warning(
+                    "Codex Hebrew rewrite failed; returning the original valid analysis: %s",
+                    exc,
                 )
 
-            return result
+            return original
 
     def _run_codex(
         self,
