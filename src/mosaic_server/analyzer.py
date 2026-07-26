@@ -75,6 +75,7 @@ class CodexCliMealAnalyzer:
             image_path = workdir / f"meal{suffix}"
             schema_path = workdir / "meal-analysis.schema.json"
             output_path = workdir / "meal-analysis.json"
+            source_path = workdir / "meal-analysis-source.json"
 
             image_path.write_bytes(image_bytes)
             schema_path.write_text(
@@ -92,14 +93,19 @@ class CodexCliMealAnalyzer:
             result = self._read_result(output_path, digest)
 
             if not self._has_hebrew_user_facing_text(result):
-                source_json = result.model_dump_json(indent=2)
+                original = result
+                source_path.write_text(
+                    original.model_dump_json(indent=2),
+                    encoding="utf-8",
+                )
                 self._run_codex(
                     workdir=workdir,
                     schema_path=schema_path,
                     output_path=output_path,
-                    prompt=self._hebrew_rewrite_prompt(source_json),
+                    prompt=self._hebrew_rewrite_prompt(source_path.name),
                 )
                 result = self._read_result(output_path, digest)
+                self._ensure_rewrite_preserved_analysis(original, result)
 
             if not self._has_hebrew_user_facing_text(result):
                 raise MealAnalyzerError(
@@ -117,6 +123,7 @@ class CodexCliMealAnalyzer:
         prompt: str,
         image_path: Path | None = None,
     ) -> None:
+        output_path.unlink(missing_ok=True)
         command = [
             self.executable,
             "exec",
@@ -184,6 +191,31 @@ class CodexCliMealAnalyzer:
         return bool(values) and all(re.search(r"[\u0590-\u05FF]", value) for value in values)
 
     @staticmethod
+    def _ensure_rewrite_preserved_analysis(
+        original: MealAnalysisResponse,
+        rewritten: MealAnalysisResponse,
+    ) -> None:
+        preserved = (
+            rewritten.analysis_id == original.analysis_id
+            and rewritten.status == original.status
+            and rewritten.nutrition == original.nutrition
+            and len(rewritten.items) == len(original.items)
+            and len(rewritten.assumptions) == len(original.assumptions)
+            and len(rewritten.confirmation_questions)
+            == len(original.confirmation_questions)
+            and all(
+                rewritten_item.confidence == original_item.confidence
+                for original_item, rewritten_item in zip(
+                    original.items, rewritten.items, strict=True
+                )
+            )
+        )
+        if not preserved:
+            raise MealAnalyzerError(
+                "Codex CLI Hebrew rewrite changed the original meal analysis"
+            )
+
+    @staticmethod
     def _prompt(digest: str) -> str:
         return f"""
 Analyze the attached meal photo for Mosaic Fit.
@@ -204,16 +236,16 @@ from the image alone and never invent hidden ingredients.
 """.strip()
 
     @staticmethod
-    def _hebrew_rewrite_prompt(source_json: str) -> str:
+    def _hebrew_rewrite_prompt(source_filename: str) -> str:
         return f"""
-Rewrite the following meal-analysis JSON so every user-facing text value is in natural Hebrew.
-Return only JSON matching the supplied schema.
+Open and read the existing JSON file `{source_filename}` from the current working directory.
+It contains a completed meal analysis. Return the same analysis using the supplied output
+schema, translating only user-facing text into natural Hebrew.
 
-Translate every item name, estimated_quantity, assumption, and confirmation question.
-Preserve analysis_id, status, confidence values, nutrition numbers, item order, and meaning.
-Brand names such as Danone PRO may remain unchanged, but surround them with Hebrew descriptive
-text. Every user-facing string must contain Hebrew characters. Do not add or remove facts.
-
-Source JSON:
-{source_json}
+Translate each item name, estimated_quantity, assumption, and confirmation question.
+Do not describe the task, mention JSON, ask the user to paste data, or produce placeholder text.
+Preserve exactly: analysis_id, status, nutrition values, confidence values, item count, item
+order, assumption count, confirmation-question count, facts, and meaning. Brand names such as
+Danone PRO may remain unchanged only inside otherwise Hebrew text. Every user-facing string
+must contain Hebrew characters.
 """.strip()
