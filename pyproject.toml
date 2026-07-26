@@ -9,6 +9,7 @@ description = "Always-on VPS API and orchestration layer for Mosaic"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "argostranslate>=1.11,<2.0",
   "fastapi>=0.115,<1.0",
   "pydantic>=2.10,<3.0",
   "pydantic-settings>=2.7,<3.0",
